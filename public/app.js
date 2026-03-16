@@ -1,168 +1,256 @@
 const socket = io();
 
 let currentRoom = null;
-let myAlias = 'HOST';
-let aesKey = null; // 端到端加密密钥
-let messages = []; // 内存消息列队
-let expireTime = 60; // 默认60秒
+let myId = null;
+let isHost = false;
+let aesKey = null; 
+let messages = []; 
+let roomUsers = {}; 
+let expireTime = 60; 
 
-// UI 切换逻辑
-function showCreate() { document.getElementById('create-panel').style.display = 'block'; document.getElementById('join-panel').style.display = 'none'; }
-function showJoin() { document.getElementById('join-panel').style.display = 'block'; document.getElementById('create-panel').style.display = 'none'; }
-
-// 生成 AES-GCM 密钥 (Web Crypto API)
-async function generateKey() {
-    return await window.crypto.subtle.generateKey(
-        { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]
-    );
+// ================= UI 交互逻辑 =================
+function togglePanel() {
+    document.getElementById('control-panel').classList.toggle('open');
 }
 
-// ================= 1. 房主逻辑 =================
+function openModal(targetId, currentAlias) {
+    if (!isHost || targetId === myId) return; // 只有房主能操作别人
+    document.getElementById('modal-target-id').value = targetId;
+    document.getElementById('modal-title').innerText = currentAlias;
+    document.getElementById('modal-desc').innerText = "请选择对该成员的操作";
+    document.getElementById('action-modal').style.display = 'flex';
+}
+function closeModal() { document.getElementById('action-modal').style.display = 'none'; }
+
+function updateTimer() {
+    expireTime = parseInt(document.getElementById('timer-setting').value);
+    alert('本地销毁时间已更新！');
+}
+
+// ================= 核心网络逻辑 =================
+async function generateKey() { return await window.crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]); }
+
 async function createRoom() {
     const maxUsers = document.getElementById('max-users').value;
-    expireTime = parseInt(document.getElementById('timer').value);
-    
-    // 房主生成房间主密钥
     aesKey = await generateKey();
-    
     socket.emit('create-room', { maxUsers });
 }
 
-socket.on('room-created', async ({ roomId, password }) => {
-    currentRoom = roomId;
-    alert(`创建成功！\n请将以下信息通过安全渠道发送给对方：\n房间ID: ${roomId}\n8位密码: ${password}`);
+socket.on('room-created', ({ roomId, password, myId: id }) => {
+    currentRoom = roomId; myId = id; isHost = true;
+    document.getElementById('info-id').innerText = roomId;
+    document.getElementById('info-pwd').innerText = password;
+    document.getElementById('host-controls').style.display = 'block';
+    document.getElementById('guest-notice').style.display = 'none';
     enterChatroom();
 });
 
 socket.on('join-request', async ({ socketId, passcode }) => {
-    const alias = prompt(`有访客请求进入！\n对方暗号: ${passcode}\n请为他强制设置一个备注 (如: 01号):`);
+    const alias = prompt(`【入群申请】\n对方暗号: ${passcode}\n\n请为他设置一个强制备注 (如: 01号):`);
     if (alias) {
-        // 导出密钥发给访客（真实军用级需用RSA非对称加密此密钥，此处为演示简化为直接发送）
         const rawKey = await window.crypto.subtle.exportKey("raw", aesKey);
         socket.emit('approve-user', { roomId: currentRoom, targetSocketId: socketId, alias, sharedKey: rawKey });
     }
 });
 
-// ================= 2. 访客逻辑 =================
 function requestJoin() {
     const roomId = document.getElementById('join-link').value;
     const password = document.getElementById('join-pwd').value;
     const passcode = document.getElementById('join-passcode').value;
     socket.emit('request-join', { roomId, password, passcode });
-    alert('申请已发送，等待房主强制备注并批准...');
+    alert('申请已发送，等待房主审批...');
 }
 
-socket.on('join-approved', async ({ roomId, alias, sharedKey }) => {
-    currentRoom = roomId;
-    myAlias = alias;
-    // 导入房主发来的主密钥
-    aesKey = await window.crypto.subtle.importKey(
-        "raw", sharedKey, "AES-GCM", true, ["encrypt", "decrypt"]
-    );
+socket.on('join-approved', async ({ roomId, alias, sharedKey, myId: id }) => {
+    currentRoom = roomId; myId = id; isHost = false;
+    aesKey = await window.crypto.subtle.importKey("raw", sharedKey, "AES-GCM", true, ["encrypt", "decrypt"]);
     enterChatroom();
 });
 
-socket.on('error', (msg) => alert(`错误: ${msg}`));
-socket.on('room-destroyed', () => { alert('房主已销毁房间，数据彻底抹除。'); location.reload(); });
+// ================= 控制台功能 (房主专属) =================
+function refreshPwd() {
+    if(confirm('刷新后，旧密码将失效，确定刷新吗？')) socket.emit('refresh-password', currentRoom);
+}
+socket.on('password-updated', (newPwd) => {
+    document.getElementById('info-pwd').innerText = newPwd;
+});
 
-// ================= 3. 军用级加密通讯 (E2EE) =================
+function changeAlias() {
+    const targetId = document.getElementById('modal-target-id').value;
+    const newAlias = prompt("请输入新备注:");
+    if (newAlias) {
+        socket.emit('change-alias', { roomId: currentRoom, targetId, newAlias });
+        closeModal();
+    }
+}
+
+function kickUser() {
+    const targetId = document.getElementById('modal-target-id').value;
+    if(confirm('确定将此人永久移出对话吗？')) {
+        socket.emit('kick-user', { roomId: currentRoom, targetId });
+        closeModal();
+    }
+}
+
+socket.on('kicked', () => { alert('您已被房主移出群组，数据已就地销毁。'); location.reload(); });
+socket.on('room-destroyed', () => { alert('房主已解散群组，安全通道已关闭。'); location.reload(); });
+socket.on('error', (msg) => alert(`系统提示: ${msg}`));
+
+// 更新成员列表 UI
+socket.on('update-users', (usersMap) => {
+    roomUsers = usersMap;
+    const count = Object.keys(usersMap).length;
+    document.getElementById('member-count').innerText = `${count} 人在线`;
+    document.getElementById('panel-member-count').innerText = count;
+    
+    const ul = document.getElementById('member-ul');
+    ul.innerHTML = '';
+    for (const [id, alias] of Object.entries(usersMap)) {
+        const li = document.createElement('li');
+        li.className = 'member-item';
+        // 提取名字首字母作为头像
+        const avatarLetter = alias.replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '').charAt(0) || '?';
+        li.innerHTML = `
+            <div class="member-avatar">${avatarLetter}</div>
+            <div style="flex:1;">
+                <div style="font-weight:bold;">${alias} ${id === myId ? '(我)' : ''}</div>
+            </div>
+        `;
+        // 房主点击别人可以操作
+        if (isHost && id !== myId) {
+            li.onclick = () => openModal(id, alias);
+        }
+        ul.appendChild(li);
+    }
+    renderCanvas(); // 名字更新后重新渲染画布防止错乱
+});
+
+// ================= 端到端加密与气泡渲染 =================
 async function sendMessage() {
-    const text = document.getElementById('msg-input').value;
+    const input = document.getElementById('msg-input');
+    const text = input.value;
     if (!text) return;
-    if (text.length > 24800) return alert('超过24800字限制');
     
     const iv = window.crypto.getRandomValues(new Uint8Array(12));
-    const encoded = new TextEncoder().encode(JSON.stringify({ alias: myAlias, text: text, time: Date.now() }));
-    
-    // AES-GCM 256位加密
+    const encoded = new TextEncoder().encode(JSON.stringify({ text: text, time: Date.now() }));
     const encrypted = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, aesKey, encoded);
     
     socket.emit('encrypted-message', {
-        roomId: currentRoom,
+        roomId: currentRoom, senderId: myId,
         encryptedBlob: { iv: Array.from(iv), data: Array.from(new Uint8Array(encrypted)) }
     });
-    document.getElementById('msg-input').value = '';
+    input.value = '';
 }
 
-socket.on('receive-message', async (encryptedBlob) => {
+// 监听回车发送
+document.getElementById('msg-input').addEventListener('keypress', function (e) {
+    if (e.key === 'Enter') sendMessage();
+});
+
+socket.on('receive-message', async ({ encryptedBlob, senderId }) => {
     try {
         const iv = new Uint8Array(encryptedBlob.iv);
         const data = new Uint8Array(encryptedBlob.data);
         const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, aesKey, data);
         const msgObj = JSON.parse(new TextDecoder().decode(decrypted));
         
-        messages.push(msgObj);
+        messages.push({ senderId, text: msgObj.text, time: msgObj.time });
         renderCanvas();
-    } catch (e) {
-        console.error("解密失败，可能受到中间人攻击");
-    }
+    } catch (e) { console.error("解密拦截"); }
 });
 
-// ================= 4. 防读取与防查岗 (Canvas 核心) =================
+// ================= Telegram 风格 Canvas 渲染引擎 =================
 const canvas = document.getElementById('chat-canvas');
 const ctx = canvas.getContext('2d');
 
 function enterChatroom() {
-    document.getElementById('home').style.display = 'none';
-    document.getElementById('chat-ui').style.display = 'block';
+    document.getElementById('lobby').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
     resizeCanvas();
-    // 启动时间胶囊：每秒检查一次，剔除过期消息
+    // 销毁循环
     setInterval(() => {
         const now = Date.now();
         const originalLength = messages.length;
         messages = messages.filter(m => (now - m.time) < (expireTime * 1000));
-        if (messages.length !== originalLength) renderCanvas(); // 如果有删除则重新渲染
+        if (messages.length !== originalLength) renderCanvas();
     }, 1000);
 }
 
 function resizeCanvas() {
     canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight * 0.8;
+    canvas.height = window.innerHeight - 120; // 减去头部和底部高度
     renderCanvas();
 }
 window.addEventListener('resize', resizeCanvas);
 
+// 绘制圆角矩形 (聊天气泡)
+function roundRect(ctx, x, y, width, height, radius, fill, stroke) {
+    ctx.beginPath(); ctx.moveTo(x + radius, y); ctx.lineTo(x + width - radius, y); ctx.quadraticCurveTo(x + width, y, x + width, y + radius); ctx.lineTo(x + width, y + height - radius); ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height); ctx.lineTo(x + radius, y + height); ctx.quadraticCurveTo(x, y + height, x, y + height - radius); ctx.lineTo(x, y + radius); ctx.quadraticCurveTo(x, y, x + radius, y); ctx.closePath();
+    if (fill) ctx.fill(); if (stroke) ctx.stroke();
+}
+
 function renderCanvas() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // 绘制防截屏背景水印
-    ctx.fillStyle = 'rgba(0, 255, 0, 0.03)';
-    ctx.font = '30px monospace';
-    for(let i=0; i<canvas.width; i+=150) {
-        for(let j=0; j<canvas.height; j+=100) {
-            ctx.fillText(myAlias, i, j); // 满屏铺满当前用户的名字
+    // 绘制暗黑背景防截图水印
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.02)';
+    ctx.font = '20px sans-serif';
+    const myAliasName = roomUsers[myId] || 'GUEST';
+    for(let i=0; i<canvas.width; i+=120) {
+        for(let j=0; j<canvas.height; j+=80) {
+            ctx.fillText(myAliasName, i, j);
         }
     }
 
-    // 绘制聊天文字 (防 DOM 抓取)
-    ctx.fillStyle = '#0f0';
-    ctx.font = '16px monospace';
-    let y = 30;
+    let y = 30; // 初始Y坐标
+    ctx.font = '15px sans-serif';
+    
     messages.forEach(m => {
-        // 极简换行处理
-        const text = `[${m.alias}]: ${m.text}`;
-        const maxLineWidth = canvas.width - 40;
-        let line = '';
-        for (let n = 0; n < text.length; n++) {
-            const testLine = line + text[n];
-            const metrics = ctx.measureText(testLine);
-            if (metrics.width > maxLineWidth && n > 0) {
-                ctx.fillText(line, 20, y);
-                line = text[n];
-                y += 24;
-            } else { line = testLine; }
+        const isMe = m.senderId === myId;
+        const alias = roomUsers[m.senderId] || '未知';
+        const text = m.text;
+        
+        // 测量文本宽度 (粗略换行逻辑)
+        const maxWidth = canvas.width * 0.7; // 气泡最大宽度70%
+        let lines = [];
+        let currentLine = '';
+        for(let i=0; i<text.length; i++) {
+            let testLine = currentLine + text[i];
+            if(ctx.measureText(testLine).width > maxWidth && i > 0) {
+                lines.push(currentLine); currentLine = text[i];
+            } else { currentLine = testLine; }
         }
-        ctx.fillText(line, 20, y);
-        y += 35; // 下一条消息间距
+        lines.push(currentLine);
+        
+        const bubbleWidth = Math.max(ctx.measureText(alias).width, ctx.measureText(lines[0]).width) + 30;
+        const bubbleHeight = lines.length * 20 + 30;
+        
+        // 计算气泡X坐标 (如果是自己，靠右；如果是别人，靠左)
+        const x = isMe ? canvas.width - bubbleWidth - 15 : 15;
+        
+        // 绘制气泡背景
+        ctx.fillStyle = isMe ? '#2b5278' : '#1a1a1a'; // Telegram 蓝紫色 / 暗灰色
+        roundRect(ctx, x, y, bubbleWidth, bubbleHeight, 12, true, false);
+        
+        // 绘制发送者名字 (小字)
+        ctx.fillStyle = isMe ? '#8ab4f8' : '#bb86fc';
+        ctx.font = '12px sans-serif';
+        ctx.fillText(alias, x + 12, y + 20);
+        
+        // 绘制消息正文
+        ctx.fillStyle = '#e0e0e0';
+        ctx.font = '15px sans-serif';
+        let textY = y + 40;
+        lines.forEach(line => {
+            ctx.fillText(line, x + 12, textY);
+            textY += 20;
+        });
+        
+        y += bubbleHeight + 15; // 下一条消息的间距
     });
 }
 
-// 防查岗机制：失去焦点瞬间黑屏
-window.addEventListener('blur', () => { document.getElementById('panic-shield').style.display = 'block'; });
-window.addEventListener('focus', () => { document.getElementById('panic-shield').style.display = 'none'; });
-
-// 禁用右键和F12
-document.addEventListener('contextmenu', event => event.preventDefault());
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) e.preventDefault();
-});
+// 防查岗机制
+let panicShield = document.getElementById('panic-shield');
+window.addEventListener('blur', () => { panicShield.style.display = 'flex'; document.title = "Google"; });
+window.addEventListener('focus', () => { panicShield.style.display = 'none'; document.title = "Secure TG"; });
