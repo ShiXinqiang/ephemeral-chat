@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SECURE CHAT</title>
+    <style>
+        body { background-color: #000; color: #0f0; font-family: monospace; text-align: center; margin: 0; overflow: hidden; }
+        .container { margin-top: 20vh; }
+        button { background: #0f0; color: #000; border: none; padding: 15px 30px; font-size: 18px; margin: 10px; cursor: pointer; font-weight: bold; }
+        input, select { background: #222; color: #0f0; border: 1px solid #0f0; padding: 10px; font-size: 16px; margin: 5px; }
+        #chat-ui { display: none; width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; background: #000; }
+        /* 核心防读取画布 */
+        canvas { display: block; width: 100%; height: 80vh; background: #050505; }
+        #input-area { height: 20vh; display: flex; align-items: center; justify-content: center; background: #111; }
+        #msg-input { width: 70%; height: 50%; }
+        /* 防查岗遮罩 */
+        #panic-shield { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: black; z-index: 9999; color: red; line-height: 100vh; font-size: 24px; }
+    </style>
+</head>
+<body>
+
+    <div id="panic-shield">SYSTEM ERROR 0x00A7</div>
+
+    <div id="home" class="container">
+        <h1>[ EPHEMERAL SECURE COMM ]</h1>
+        <button onclick="showCreate()">创建对话</button>
+        <button onclick="showJoin()">加入对话</button>
+        
+        <div id="create-panel" style="display:none; margin-top: 20px;">
+            <select id="max-users"><option value="15">普通房间 (最高15人)</option><option value="30">👑 高级房间 (最高30人)</option></select>
+            <select id="timer"><option value="60">1分钟后焚毁</option><option value="3600">1小时后焚毁</option></select>
+            <br><button onclick="createRoom()">生成安全通道</button>
+        </div>
+
+        <div id="join-panel" style="display:none; margin-top: 20px;">
+            <input id="join-link" placeholder="房间ID (URL中获取)" /><br>
+            <input id="join-pwd" placeholder="8位数字密码" /><br>
+            <input id="join-passcode" placeholder="输入你的申请暗号/身份" /><br>
+            <button onclick="requestJoin()">发送申请</button>
+        </div>
+    </div>
+
+    <!-- 聊天主界面 (完全基于 Canvas) -->
+    <div id="chat-ui">
+        <canvas id="chat-canvas"></canvas>
+        <div id="input-area">
+            <textarea id="msg-input" placeholder="输入机密信息 (最高24800字)..."></textarea>
+            <button onclick="sendMessage()">发送 [E2EE]</button>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
