@@ -21,7 +21,6 @@
         .header-status { font-size: 12px; color: #888; }
         
         .settings-btn { background: none; border: none; color: var(--text); font-size: 24px; cursor: pointer; padding: 0; width: auto; position: relative; }
-        /* 红点提示 */
         .badge { display: none; position: absolute; top: 0; right: -5px; background: var(--danger); color: white; border-radius: 50%; width: 18px; height: 18px; font-size: 10px; line-height: 18px; text-align: center; font-weight: bold; }
 
         canvas { display: block; width: 100%; height: calc(100vh - 120px); background: #000; }
@@ -49,13 +48,20 @@
         .btn-accept { background: var(--success); }
         .btn-reject { background: var(--danger); }
 
-        /* 全局 Toast 提示 (取代 alert) */
+        /* 开关按钮样式 */
+        .toggle-switch { display: flex; justify-content: space-between; align-items: center; background: var(--bg); padding: 12px 15px; border-radius: 8px; margin-bottom: 10px; font-size: 14px; }
+        .switch { position: relative; display: inline-block; width: 40px; height: 20px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #555; transition: .4s; border-radius: 34px; }
+        .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 2px; bottom: 2px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: var(--accent); }
+        input:checked + .slider:before { transform: translateX(20px); }
+
         #sys-toast { position: fixed; top: -50px; left: 50%; transform: translateX(-50%); background: #333; color: white; padding: 12px 24px; border-radius: 20px; z-index: 9999; transition: top 0.3s ease; box-shadow: 0 4px 12px rgba(0,0,0,0.5); font-size: 14px; }
         #sys-toast.show { top: 20px; }
         #sys-toast.error { background: var(--danger); }
         #sys-toast.success { background: var(--success); }
 
-        /* 全局定制 Modal (取代 prompt/confirm) */
         #ui-modal { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); z-index: 8000; align-items: center; justify-content: center; }
         .ui-modal-box { background: var(--panel); padding: 25px; border-radius: 12px; width: 320px; text-align: center; }
         #ui-modal-title { margin-top: 0; font-size: 18px; }
@@ -71,11 +77,8 @@
 <body>
 
     <div id="panic-shield" style="display: none;">NO SIGNAL</div>
-
-    <!-- 全局 Toast 提示框 -->
     <div id="sys-toast">系统提示</div>
 
-    <!-- 全局定制交互模态框 -->
     <div id="ui-modal">
         <div class="ui-modal-box">
             <h3 id="ui-modal-title">标题</h3>
@@ -88,25 +91,31 @@
         </div>
     </div>
 
+    <!-- 登录/创建大厅 -->
     <div id="lobby">
         <h2 style="margin-bottom: 5px;">Secure Channel</h2>
         <p style="color: #888; font-size: 14px; margin-bottom: 30px;">军用级端到端加密网络</p>
         
-        <div class="card">
+        <!-- 正常创建面板 -->
+        <div class="card" id="create-card">
             <h3>创建新的对话</h3>
             <select id="max-users"><option value="15">普通群组 (15人)</option><option value="30">高级群组 (30人)</option></select>
             <button onclick="createRoom()">生成安全群组</button>
         </div>
 
-        <div class="card">
-            <h3>加入现有对话</h3>
+        <!-- 手动输入加入面板 -->
+        <div class="card" id="join-card">
+            <h3 id="join-title">加入现有对话</h3>
             <input id="join-link" placeholder="房间 ID" />
             <input id="join-pwd" placeholder="8位安全密码" />
+            <!-- 如果带有邀请链接，上面两个框会被隐藏 -->
             <input id="join-passcode" placeholder="输入您的申请身份/暗号" />
-            <button onclick="requestJoin()">发送申请</button>
+            <button onclick="requestJoin()" id="join-btn">发送申请</button>
+            <button class="action-btn" id="cancel-invite-btn" style="display: none;" onclick="clearInvite()">取消邀请，手动输入</button>
         </div>
     </div>
 
+    <!-- 聊天主界面 -->
     <div id="app">
         <header>
             <div>
@@ -132,10 +141,8 @@
             </div>
             <div class="panel-content">
                 
-                <!-- 房主专属控制区 -->
                 <div id="host-controls" style="display: none;">
                     
-                    <!-- 申请列表 -->
                     <div id="pending-section" style="display: none; background: #222; padding: 10px; border-radius: 8px; border: 1px solid #333;">
                         <div class="section-title" style="margin-top: 0; color: #ffca28;">⏳ 待审批申请 (<span id="pending-count">0</span>)</div>
                         <ul class="member-list" id="pending-ul"></ul>
@@ -146,6 +153,18 @@
                     <div class="info-box">密码: <span id="info-pwd" style="color: #ffca28;"></span></div>
                     <button class="action-btn" onclick="refreshPwd()">🔄 刷新密码</button>
                     
+                    <!-- 新增：免密直连开关 -->
+                    <div class="section-title" style="margin-top: 15px;">快速邀请设置</div>
+                    <div class="toggle-switch">
+                        <span>允许链接免密访问</span>
+                        <label class="switch">
+                            <input type="checkbox" id="invite-toggle" onchange="toggleInviteLink()">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <button class="action-btn" id="copy-invite-btn" style="display: none; background: var(--success);" onclick="copyInviteLink()">📋 复制免密邀请链接</button>
+                    <p id="invite-warn" style="font-size: 12px; color: #888; display: none; margin-top: 5px;">* 获得链接的人无需输入密码，但仍需您审核暗号。刷新密码后链接将失效。</p>
+
                     <div class="section-title" style="margin-top: 15px;">安全设置</div>
                     <select id="timer-setting" class="action-btn" onchange="updateTimer()">
                         <option value="60">阅后即焚 (1分钟)</option>
