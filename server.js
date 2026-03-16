@@ -19,8 +19,11 @@ io.on('connection', (socket) => {
             host: socket.id,
             password: password,
             maxUsers: maxUsers > 15 ? 30 : 15,
-            userOrder: [socket.id], // 用于记录加入顺序，方便继承
-            users: { [socket.id]: '👑 房主 (我)' }
+            userOrder: [socket.id],
+            users: { [socket.id]: '👑 房主 (我)' },
+            // --- 反轰炸防御机制 ---
+            pendingUsers: new Set(), // 当前正在排队的 ID
+            blockedUsers: new Set()  // 被拉黑的 ID
         };
         socket.join(roomId);
         socket.emit('room-created', { roomId, password, myId: socket.id });
@@ -32,16 +35,24 @@ io.on('connection', (socket) => {
         if (room.password !== password) return socket.emit('sys-toast', { msg: '密码错误', type: 'error' });
         if (Object.keys(room.users).length >= room.maxUsers) return socket.emit('sys-toast', { msg: '房间已满', type: 'error' });
         
-        // 发送给当前房主（无论是不是初创者）
+        // --- 核心拦截逻辑 ---
+        if (room.blockedUsers.has(socket.id)) return socket.emit('sys-toast', { msg: '您已被拒绝访问该对话', type: 'error' });
+        if (room.pendingUsers.has(socket.id)) return socket.emit('sys-toast', { msg: '请勿重复申请，正在等待审批', type: 'error' });
+        if (room.pendingUsers.size >= 20) return socket.emit('sys-toast', { msg: '申请队列已满，请稍后再试', type: 'error' });
+
+        // 加入排队集合
+        room.pendingUsers.add(socket.id);
+        
         io.to(room.host).emit('join-request', { socketId: socket.id, passcode });
-        socket.emit('sys-toast', { msg: '申请已发送，请等待房主审批...', type: 'info' });
+        socket.emit('sys-toast', { msg: '申请已发送，请等待房主审批...', type: 'success' });
     });
 
     socket.on('approve-user', ({ roomId, targetSocketId, alias, sharedKey }) => {
         const room = rooms[roomId];
         if (room && room.host === socket.id) {
+            room.pendingUsers.delete(targetSocketId); // 从队列移除
             room.users[targetSocketId] = alias;
-            room.userOrder.push(targetSocketId); // 加入顺序列表
+            room.userOrder.push(targetSocketId);
             
             const targetSocket = io.sockets.sockets.get(targetSocketId);
             if (targetSocket) {
@@ -52,10 +63,18 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('reject-user', (targetSocketId) => {
-        io.to(targetSocketId).emit('sys-toast', { msg: '房主拒绝了您的加入申请', type: 'error' });
+    socket.on('reject-user', ({ roomId, targetSocketId, block }) => {
+        const room = rooms[roomId];
+        if (room && room.host === socket.id) {
+            room.pendingUsers.delete(targetSocketId); // 从队列移除
+            if (block) {
+                room.blockedUsers.add(targetSocketId); // 永久拉黑该设备
+            }
+            io.to(targetSocketId).emit('sys-toast', { msg: block ? '您已被拉黑' : '房主拒绝了您的申请', type: 'error' });
+        }
     });
 
+    // ... 下方保留之前的逻辑（刷新密码、踢人、发消息、断开连接）
     socket.on('refresh-password', (roomId) => {
         const room = rooms[roomId];
         if (room && room.host === socket.id) {
@@ -98,18 +117,15 @@ io.on('connection', (socket) => {
                 room.userOrder = room.userOrder.filter(id => id !== socket.id);
 
                 if (room.userOrder.length === 0) {
-                    // 房间没人了，物理销毁
                     delete rooms[roomId];
                 } else if (room.host === socket.id) {
-                    // 房主走了，顺位第二个人继承
                     room.host = room.userOrder[0];
-                    room.users[room.host] = '👑 ' + room.users[room.host].replace('👑 ', ''); // 加上皇冠
-                    
+                    room.users[room.host] = '👑 ' + room.users[room.host].replace('👑 ', '');
+                    room.pendingUsers.clear(); // 换房主时清空申请列表防作弊
                     io.to(room.host).emit('you-are-new-host', room.password);
                     io.to(roomId).emit('sys-toast', { msg: '原房主已离线，权限已移交', type: 'info' });
                     io.to(roomId).emit('update-users', room.users);
                 } else {
-                    // 普通人走了，更新列表即可
                     io.to(roomId).emit('update-users', room.users);
                 }
             }
