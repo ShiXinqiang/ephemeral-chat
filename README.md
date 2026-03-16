@@ -26,7 +26,7 @@
 **本地运行测试:**
 ```bash
 # 1. 克隆项目
-git clone https://github.com/你的用户名/ephemeral-chat.git
+git clone https://github.com/ShiXinqiang/ephemeral-chat.git
 
 # 2. 进入目录并安装依赖
 cd ephemeral-chat
